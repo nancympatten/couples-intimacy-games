@@ -1,34 +1,33 @@
+
 #!/usr/bin/env python3
 """
 Couples Intimacy Games — Static Programmatic SEO Website Generator
 
-Python 3, zero external dependencies.
-
 Usage:
     python3 build.py
-
-Optional configuration:
-    BASE_URL=https://example.com python3 build.py
 
 Input:
     data.csv
 
 Output:
     dist/
-        index.html
-        game/
-        category/
-        topic/
-        tag/
-        sitemap.xml
-        sitemap-1.xml
-        sitemap.xsl
-        robots.txt
-        dmca.html
-        2257.html
+
+Python 3 — zero external dependencies.
 """
 
 import os
+import csv
+import re
+import json
+import html
+import math
+import shutil
+from collections import defaultdict, Counter
+from datetime import datetime, timezone
+
+# =========================================================
+# SITE CONFIGURATION
+# =========================================================
 
 BASE_URL = os.environ.get(
     "BASE_URL",
@@ -36,26 +35,43 @@ BASE_URL = os.environ.get(
 ).rstrip("/")
 
 SITE_NAME = "Couples Intimacy Games"
-NICHE_TOPIC = "Interactive Date Night Questions, Truth or Dare & Couples Games"
+NICHE_TOPIC = (
+    "Interactive Date Night Questions, Truth or Dare & Couples Games"
+)
 CONTACT_EMAIL = "nancympatten@gmail.com"
+
 AFFILIATE_URL = "#affiliate-link"
-AFFILIATE_CTA_TEXT = "Explore Interactive Couples Experiences & Live Shows"
+AFFILIATE_CTA_TEXT = (
+    "Explore Interactive Couples Experiences & Live Shows"
+)
 
-import csv
-import re
-import json
-import html
-import math
-import shutil
-import random
-import hashlib
-from collections import Counter, defaultdict
-from datetime import datetime, timezone
-from urllib.parse import quote
+GOOGLE_SITE_VERIFICATION = (
+    "Ee2L9A2G2nVVNtBt7HiplcBJf1nSen-Rcz4sNqLuAdc"
+)
+BING_SITE_VERIFICATION = (
+    "4573069C62AEC27DA4F08DC57760BAD4"
+)
 
-# ---------------------------------------------------------
-# CONFIGURATION
-# ---------------------------------------------------------
+NETWORK_SITES = [
+    ("AI Girlfriend Prompts",
+     "https://ai-girlfriend-prompts.velvetgrid.workers.dev"),
+    ("Fantasy Roleplay Hub",
+     "https://fantasy-roleplay-hub.velvetgrid.workers.dev"),
+    ("Character Persona Hub",
+     "https://character-persona-hub.velvetgrid.workers.dev"),
+    ("Flirty Chat Openers",
+     "https://flirty-chat-openers.velvetgrid.workers.dev"),
+    ("Spicy Party Games",
+     "https://spicy-party-games.velvetgrid.workers.dev"),
+    ("Intimacy Quiz Hub",
+     "https://intimacy-quiz-hub.velvetgrid.workers.dev"),
+    ("Couples Bucket List",
+     "https://couples-bucket-list.velvetgrid.workers.dev"),
+    ("Adult AI Art Prompts",
+     "https://adult-ai-art-prompts.velvetgrid.workers.dev"),
+    ("Midnight Audio Stories",
+     "https://midnight-audio-stories.velvetgrid.workers.dev"),
+]
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CSV_FILE = os.path.join(ROOT, "data.csv")
@@ -64,6 +80,7 @@ DIST = os.path.join(ROOT, "dist")
 PER_PAGE = 24
 RELATED_LIMIT = 8
 LATEST_LIMIT = 30
+SITEMAP_CHUNK_SIZE = 45000
 
 EXPECTED_COLUMNS = [
     "slug",
@@ -92,9 +109,10 @@ COLORS = {
     "border": "#30263d",
 }
 
-# ---------------------------------------------------------
+
+# =========================================================
 # GENERAL HELPERS
-# ---------------------------------------------------------
+# =========================================================
 
 def esc(value):
     return html.escape(str(value or ""), quote=True)
@@ -116,22 +134,15 @@ def split_tags(value):
     if not value:
         return []
 
-    parts = re.split(r"[,;|]", str(value))
-
     result = []
     seen = set()
 
-    for part in parts:
-        tag = part.strip()
+    for item in re.split(r"[,;|]", str(value)):
+        tag = item.strip()
 
-        if not tag:
-            continue
-
-        key = tag.lower()
-
-        if key not in seen:
+        if tag and tag.lower() not in seen:
             result.append(tag)
-            seen.add(key)
+            seen.add(tag.lower())
 
     return result
 
@@ -140,15 +151,15 @@ def split_cards(value):
     if not value:
         return []
 
-    cards = []
+    result = []
 
     for item in str(value).split("|"):
         item = item.strip()
 
-        if item and item not in cards:
-            cards.append(item)
+        if item and item not in result:
+            result.append(item)
 
-    return cards
+    return result
 
 
 def normalize_date(value):
@@ -191,12 +202,12 @@ def date_sort_key(game):
 def write_file(path, content):
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(content)
+    with open(path, "w", encoding="utf-8", newline="\n") as file:
+        file.write(content)
 
 
 def canonical(path):
-    return BASE_URL + "/" + path.lstrip("/")
+    return BASE_URL + "/" + str(path).lstrip("/")
 
 
 def json_script(data):
@@ -204,11 +215,6 @@ def json_script(data):
         data,
         ensure_ascii=False
     ).replace("</", "<\\/")
-
-
-def format_count(number, singular, plural=None):
-    plural = plural or singular + "s"
-    return f"{number} {singular if number == 1 else plural}"
 
 
 def truncate(value, length=160):
@@ -220,9 +226,14 @@ def truncate(value, length=160):
     return value[:length - 3].rsplit(" ", 1)[0] + "..."
 
 
-# ---------------------------------------------------------
+def format_count(number, singular, plural=None):
+    plural = plural or singular + "s"
+    return f"{number} {singular if number == 1 else plural}"
+
+
+# =========================================================
 # CSV LOADING
-# ---------------------------------------------------------
+# =========================================================
 
 def load_games():
     if not os.path.exists(CSV_FILE):
@@ -237,9 +248,9 @@ def load_games():
         "r",
         encoding="utf-8-sig",
         newline=""
-    ) as f:
+    ) as file:
 
-        reader = csv.DictReader(f)
+        reader = csv.DictReader(file)
 
         if not reader.fieldnames:
             raise ValueError("data.csv has no header row.")
@@ -266,7 +277,8 @@ def load_games():
 
             if not game["title"]:
                 print(
-                    f"Warning: Skipping row {row_number}: missing title."
+                    f"Warning: Skipping row {row_number}: "
+                    "missing title."
                 )
                 continue
 
@@ -288,19 +300,18 @@ def load_games():
             game["category"] = (
                 game["category"] or "General Couples Games"
             )
-
             game["subcategory"] = (
                 game["subcategory"] or "General"
             )
-
             game["target_keyword"] = (
                 game["target_keyword"] or game["title"]
             )
-
             game["description"] = (
                 game["description"]
-                or f"Explore {game['title']}, an interactive "
-                   "couples game designed to encourage connection."
+                or (
+                    f"Explore {game['title']}, an interactive "
+                    "couples game designed to encourage connection."
+                )
             )
 
             game["tags_list"] = split_tags(game["tags"])
@@ -316,7 +327,7 @@ def load_games():
                     "What is a favorite memory you share?",
                     "What makes you feel most connected?",
                     "What is something new you would enjoy trying together?",
-                    "What is one question you have always wanted to ask?"
+                    "What is one question you have always wanted to ask?",
                 ]
 
             if len(game["cards_list"]) < 6:
@@ -333,23 +344,20 @@ def load_games():
     return games
 
 
-# ---------------------------------------------------------
-# SHARED DATA INDEXES
-# ---------------------------------------------------------
+# =========================================================
+# DATA INDEXES
+# =========================================================
 
 def build_indexes(games):
-
     categories = defaultdict(list)
     subcategories = defaultdict(list)
     tags = defaultdict(list)
 
     for game in games:
-
         game["category_slug"] = slugify(game["category"])
         game["subcategory_slug"] = slugify(game["subcategory"])
 
         categories[game["category_slug"]].append(game)
-
         subcategories[game["subcategory_slug"]].append(game)
 
         for tag in game["tags_list"]:
@@ -358,9 +366,9 @@ def build_indexes(games):
     return categories, subcategories, tags
 
 
-# ---------------------------------------------------------
-# SHARED HTML COMPONENTS
-# ---------------------------------------------------------
+# =========================================================
+# GLOBAL CSS
+# =========================================================
 
 def global_css():
     return r"""
@@ -376,46 +384,24 @@ def global_css():
     --muted: #aaa0b5;
     --border: #30263d;
 }
-
-* {
-    box-sizing: border-box;
-}
-
-html {
-    scroll-behavior: smooth;
-}
-
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
 body {
     margin: 0;
     background: var(--bg);
     color: var(--text);
-    font-family: Inter, system-ui, -apple-system,
-        BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: Inter,system-ui,-apple-system,
+        BlinkMacSystemFont,"Segoe UI",sans-serif;
     line-height: 1.7;
 }
-
-a {
-    color: inherit;
-    text-decoration: none;
-}
-
-a:hover {
-    color: var(--pink);
-}
-
-button, input, select {
-    font: inherit;
-}
-
-button {
-    cursor: pointer;
-}
-
+a { color: inherit; text-decoration: none; }
+a:hover { color: var(--pink); }
+button,input,select { font: inherit; }
+button { cursor: pointer; }
 .container {
-    width: min(1160px, calc(100% - 36px));
+    width: min(1160px,calc(100% - 36px));
     margin: auto;
 }
-
 .header {
     position: sticky;
     top: 0;
@@ -424,7 +410,6 @@ button {
     backdrop-filter: blur(16px);
     border-bottom: 1px solid var(--border);
 }
-
 .nav {
     min-height: 70px;
     display: flex;
@@ -432,17 +417,12 @@ button {
     justify-content: space-between;
     gap: 18px;
 }
-
 .brand {
     font-size: 19px;
     font-weight: 900;
     letter-spacing: -.6px;
 }
-
-.brand span {
-    color: var(--pink);
-}
-
+.brand span { color: var(--pink); }
 .nav-links {
     display: flex;
     gap: 18px;
@@ -450,12 +430,10 @@ button {
     font-size: 13px;
     color: var(--muted);
 }
-
 .hero {
     padding: 76px 0 45px;
     text-align: center;
 }
-
 .eyebrow {
     display: inline-block;
     color: #f9a8d4;
@@ -466,76 +444,46 @@ button {
     font-size: 12px;
     font-weight: 800;
 }
-
 h1 {
-    font-size: clamp(32px, 6vw, 58px);
+    font-size: clamp(32px,6vw,58px);
     line-height: 1.13;
     letter-spacing: -2px;
     margin: 20px auto;
 }
-
 h2 {
-    font-size: clamp(23px, 4vw, 32px);
+    font-size: clamp(23px,4vw,32px);
     letter-spacing: -.8px;
     line-height: 1.25;
 }
-
-h3 {
-    line-height: 1.35;
-}
-
+h3 { line-height: 1.35; }
 .gradient {
-    background: linear-gradient(100deg, #f472b6, #a78bfa);
+    background: linear-gradient(100deg,#f472b6,#a78bfa);
     background-clip: text;
     -webkit-background-clip: text;
     color: transparent;
 }
-
-.muted {
-    color: var(--muted);
-}
-
-.section {
-    padding: 34px 0;
-}
-
-.section-heading {
-    margin-bottom: 22px;
-}
-
+.muted { color: var(--muted); }
+.section { padding: 34px 0; }
+.section-heading { margin-bottom: 22px; }
 .grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0,1fr));
+    grid-template-columns: repeat(3,minmax(0,1fr));
     gap: 17px;
 }
-
 .card {
     padding: 21px;
     border: 1px solid var(--border);
     background: var(--card);
     border-radius: 17px;
-    transition: transform .2s, border-color .2s;
+    transition: transform .2s,border-color .2s;
 }
-
 .card:hover {
     transform: translateY(-3px);
     border-color: var(--pink);
 }
-
-.game-card {
-    display: block;
-}
-
-.game-card h3 {
-    font-size: 17px;
-    margin: 8px 0;
-}
-
-.game-card p {
-    font-size: 13px;
-    color: var(--muted);
-}
-
+.game-card { display: block; }
+.game-card h3 { font-size: 17px; margin: 8px 0; }
+.game-card p { font-size: 13px; color: var(--muted); }
 .meta {
     font-size: 11px;
     color: #e9a5ce;
@@ -543,13 +491,7 @@ h3 {
     text-transform: uppercase;
     letter-spacing: .6px;
 }
-
-.pills {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 9px;
-}
-
+.pills { display: flex; flex-wrap: wrap; gap: 9px; }
 .pill {
     display: inline-flex;
     border: 1px solid var(--border);
@@ -559,16 +501,8 @@ h3 {
     padding: 7px 13px;
     font-size: 12px;
 }
-
-.pill:hover {
-    border-color: var(--pink);
-}
-
-.search-wrap {
-    max-width: 700px;
-    margin: 30px auto;
-}
-
+.pill:hover { border-color: var(--pink); }
+.search-wrap { max-width: 700px; margin: 30px auto; }
 .search {
     width: 100%;
     background: var(--card);
@@ -578,11 +512,7 @@ h3 {
     border-radius: 14px;
     outline: none;
 }
-
-.search:focus {
-    border-color: var(--pink);
-}
-
+.search:focus { border-color: var(--pink); }
 .btn {
     display: inline-flex;
     justify-content: center;
@@ -595,29 +525,14 @@ h3 {
     font-weight: 800;
     font-size: 13px;
 }
-
-.btn:hover {
-    color: white;
-    filter: brightness(1.12);
-}
-
+.btn:hover { color: white; filter: brightness(1.12); }
 .btn-secondary {
     background: var(--card2);
     border: 1px solid var(--border);
     color: var(--text);
 }
-
-.controls {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-}
-
-.deck {
-    margin-top: 24px;
-    perspective: 1100px;
-}
-
+.controls { display: flex; flex-wrap: wrap; gap: 10px; }
+.deck { margin-top: 24px; perspective: 1100px; }
 .playing-card {
     position: relative;
     min-height: 260px;
@@ -627,11 +542,7 @@ h3 {
     transition: transform .6s;
     cursor: pointer;
 }
-
-.playing-card.flipped {
-    transform: rotateY(180deg);
-}
-
+.playing-card.flipped { transform: rotateY(180deg); }
 .card-face {
     position: absolute;
     inset: 0;
@@ -645,32 +556,26 @@ h3 {
     border-radius: 22px;
     background:
         radial-gradient(circle at 15% 10%,
-            rgba(236,72,153,.18), transparent 45%),
-        var(--card);
+        rgba(236,72,153,.18),transparent 45%),var(--card);
     backface-visibility: hidden;
     -webkit-backface-visibility: hidden;
 }
-
 .card-back {
     transform: rotateY(180deg);
     background:
         radial-gradient(circle at 85% 20%,
-            rgba(139,92,246,.23), transparent 45%),
-        var(--card2);
+        rgba(139,92,246,.23),transparent 45%),var(--card2);
 }
-
 .card-face h3 {
     font-size: clamp(21px,4vw,29px);
     font-weight: 800;
 }
-
 .player-panel {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 12px;
     margin: 22px 0;
 }
-
 .player {
     padding: 17px;
     background: var(--card);
@@ -678,24 +583,17 @@ h3 {
     border-radius: 13px;
     text-align: center;
 }
-
 .player.active {
     border-color: var(--pink);
     box-shadow: 0 0 20px rgba(236,72,153,.12);
 }
-
-.player strong {
-    display: block;
-    color: #f9a8d4;
-}
-
+.player strong { display: block; color: #f9a8d4; }
 .form-row {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 12px;
     margin: 18px 0;
 }
-
 .field {
     display: block;
     width: 100%;
@@ -705,7 +603,6 @@ h3 {
     padding: 12px;
     border-radius: 10px;
 }
-
 .audio-panel {
     padding: 22px;
     border: 1px solid var(--border);
@@ -713,17 +610,11 @@ h3 {
     border-radius: 17px;
     margin-top: 22px;
 }
-
-.audio-panel label {
-    display: block;
-    margin: 12px 0;
-}
-
+.audio-panel label { display: block; margin: 12px 0; }
 .audio-panel input[type=range] {
     width: 100%;
     accent-color: var(--pink);
 }
-
 .affiliate {
     padding: 30px;
     text-align: center;
@@ -731,34 +622,13 @@ h3 {
     border: 1px solid rgba(236,72,153,.4);
     background:
         radial-gradient(circle at 20% 20%,
-            rgba(236,72,153,.16), transparent 50%),
-        var(--card);
+        rgba(236,72,153,.16),transparent 50%),var(--card);
     margin: 30px 0;
 }
-
-.faq-item {
-    border-bottom: 1px solid var(--border);
-    padding: 16px 0;
-}
-
-.faq-item summary {
-    cursor: pointer;
-    font-weight: 800;
-}
-
-.pagination {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    margin: 30px 0;
-}
-
-.breadcrumbs {
-    color: var(--muted);
-    font-size: 12px;
-    padding: 20px 0;
-}
-
+.faq-item { border-bottom: 1px solid var(--border); padding: 16px 0; }
+.faq-item summary { cursor: pointer; font-weight: 800; }
+.pagination { display: flex; flex-wrap: wrap; gap: 10px; margin: 30px 0; }
+.breadcrumbs { color: var(--muted); font-size: 12px; padding: 20px 0; }
 .footer {
     border-top: 1px solid var(--border);
     margin-top: 60px;
@@ -766,13 +636,18 @@ h3 {
     color: var(--muted);
     font-size: 12px;
 }
-
-.footer-links {
+.footer-links { display: flex; flex-wrap: wrap; gap: 18px; }
+.network-links {
     display: flex;
     flex-wrap: wrap;
-    gap: 18px;
+    gap: 10px 17px;
+    margin-top: 17px;
 }
-
+.network-links a {
+    color: #e9a5ce;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
 .age-overlay {
     display: none;
     position: fixed;
@@ -784,7 +659,6 @@ h3 {
     justify-content: center;
     padding: 20px;
 }
-
 .age-box {
     width: min(450px,100%);
     padding: 32px;
@@ -793,53 +667,31 @@ h3 {
     border-radius: 20px;
     background: var(--card);
 }
-
-.age-box h2 {
-    color: var(--pink);
-}
-
+.age-box h2 { color: var(--pink); }
 .empty-state {
     display: none;
     padding: 25px;
     text-align: center;
     color: var(--muted);
 }
-
 @media(max-width:850px) {
-    .grid {
-        grid-template-columns: repeat(2,minmax(0,1fr));
-    }
+    .grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
 }
-
 @media(max-width:580px) {
-    .grid {
-        grid-template-columns: 1fr;
-    }
-
-    .hero {
-        padding-top: 48px;
-    }
-
-    .nav-links {
-        gap: 9px;
-        font-size: 11px;
-    }
-
-    .form-row {
-        grid-template-columns: 1fr;
-    }
-
-    .playing-card, .card-face {
-        min-height: 240px;
-    }
-
-    .card-face {
-        padding: 23px;
-    }
+    .grid { grid-template-columns: 1fr; }
+    .hero { padding-top: 48px; }
+    .nav-links { gap: 9px; font-size: 11px; }
+    .form-row { grid-template-columns: 1fr; }
+    .playing-card,.card-face { min-height: 240px; }
+    .card-face { padding: 23px; }
 }
 </style>
 """
 
+
+# =========================================================
+# SHARED HTML COMPONENTS
+# =========================================================
 
 def age_modal():
     return """
@@ -861,22 +713,24 @@ def age_modal():
         </p>
     </div>
 </div>
-
 <script>
 (function() {
+    const overlay = document.getElementById("ageOverlay");
+    const button = document.getElementById("ageYes");
+
     try {
         if (localStorage.getItem("couples_age_verified") !== "yes") {
-            document.getElementById("ageOverlay").style.display = "flex";
+            overlay.style.display = "flex";
         }
     } catch(e) {
-        document.getElementById("ageOverlay").style.display = "flex";
+        overlay.style.display = "flex";
     }
 
-    document.getElementById("ageYes").addEventListener("click", function() {
+    button.addEventListener("click", function() {
         try {
             localStorage.setItem("couples_age_verified", "yes");
         } catch(e) {}
-        document.getElementById("ageOverlay").style.display = "none";
+        overlay.style.display = "none";
     });
 })();
 </script>
@@ -887,7 +741,9 @@ def header():
     return """
 <header class="header">
     <div class="container nav">
-        <a class="brand" href="/">Couples <span>Intimacy</span> Games</a>
+        <a class="brand" href="/">
+            Couples <span>Intimacy</span> Games
+        </a>
         <nav class="nav-links">
             <a href="/">Home</a>
             <a href="/#categories">Categories</a>
@@ -899,6 +755,12 @@ def header():
 
 
 def footer():
+    network_html = "".join(
+        f'<a href="{esc(url)}" target="_blank" '
+        f'rel="noopener">{esc(name)}</a>'
+        for name, url in NETWORK_SITES
+    )
+
     return f"""
 <footer class="footer">
     <div class="container">
@@ -906,11 +768,20 @@ def footer():
             <a href="/">Home</a>
             <a href="/dmca.html">DMCA</a>
             <a href="/2257.html">18 U.S.C. 2257</a>
-            <a href="mailto:{CONTACT_EMAIL}">Contact</a>
+            <a href="mailto:{esc(CONTACT_EMAIL)}">Contact</a>
             <a href="/sitemap.xml">Sitemap</a>
         </div>
+
+        <h3>Explore Our Other Websites</h3>
+        <p class="muted">
+            Discover more creative, relationship and entertainment resources.
+        </p>
+        <div class="network-links">
+            {network_html}
+        </div>
+
         <p>
-            © {datetime.now().year} {SITE_NAME}.
+            © {datetime.now().year} {esc(SITE_NAME)}.
             For adults 18+ only. Play respectfully and
             communicate openly with your partner.
         </p>
@@ -926,34 +797,44 @@ def footer():
 def page_head(title, description, path, og_type="website"):
     url = canonical(path)
 
-    return f"""
-<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="{COLORS['background']}">
 <meta name="rating" content="RTA-5042-1996-1400-1577-RTA">
+
 <title>{esc(title)}</title>
 <meta name="description" content="{esc(truncate(description, 160))}">
 <link rel="canonical" href="{esc(url)}">
+
+<meta name="google-site-verification"
+      content="{esc(GOOGLE_SITE_VERIFICATION)}">
+<meta name="msvalidate.01"
+      content="{esc(BING_SITE_VERIFICATION)}">
+
 <meta property="og:type" content="{esc(og_type)}">
 <meta property="og:site_name" content="{esc(SITE_NAME)}">
 <meta property="og:title" content="{esc(title)}">
-<meta property="og:description" content="{esc(truncate(description, 160))}">
+<meta property="og:description"
+      content="{esc(truncate(description, 160))}">
 <meta property="og:url" content="{esc(url)}">
+
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="{esc(title)}">
-<meta name="twitter:description" content="{esc(truncate(description, 160))}">
+<meta name="twitter:description"
+      content="{esc(truncate(description, 160))}">
+
 {global_css()}
 </head>
 <body>
 """
 
 
-# ---------------------------------------------------------
-# GAME CARDS AND RELATED GAMES
-# ---------------------------------------------------------
+# =========================================================
+# GAME CARD COMPONENTS
+# =========================================================
 
 def game_card_html(game):
     path = f"/game/{game['slug']}.html"
@@ -983,12 +864,11 @@ def game_card_html(game):
 def related_games(game, games):
     scored = []
 
-    current_tags = set(
+    current_tags = {
         slugify(tag) for tag in game["tags_list"]
-    )
+    }
 
     for other in games:
-
         if other["slug"] == game["slug"]:
             continue
 
@@ -1000,19 +880,18 @@ def related_games(game, games):
         if other["category_slug"] == game["category_slug"]:
             score += 3
 
-        other_tags = set(
+        other_tags = {
             slugify(tag) for tag in other["tags_list"]
-        )
+        }
 
         score += len(current_tags & other_tags) * 2
-
         scored.append((score, other["slug"], other))
 
-    scored.sort(
-        key=lambda item: (-item[0], item[1])
-    )
+    scored.sort(key=lambda item: (-item[0], item[1]))
 
-    result = [item[2] for item in scored[:RELATED_LIMIT]]
+    result = [
+        item[2] for item in scored[:RELATED_LIMIT]
+    ]
 
     if len(result) < RELATED_LIMIT:
         already = {game["slug"]} | {
@@ -1024,15 +903,15 @@ def related_games(game, games):
                 result.append(other)
                 already.add(other["slug"])
 
-            if len(result) == RELATED_LIMIT:
+            if len(result) >= RELATED_LIMIT:
                 break
 
     return result
 
 
-# ---------------------------------------------------------
+# =========================================================
 # INTERACTIVE GAME JAVASCRIPT
-# ---------------------------------------------------------
+# =========================================================
 
 def game_javascript(game):
     cards = json_script(game["cards_list"])
@@ -1042,9 +921,7 @@ def game_javascript(game):
 (function() {{
 "use strict";
 
-const originalCards = {cards};
-
-let cards = originalCards.slice();
+let cards = {cards}.slice();
 let currentIndex = 0;
 let currentPlayer = 1;
 let turnCount = 0;
@@ -1086,12 +963,10 @@ function showCard() {{
     flipped = false;
 }}
 
-function flipCard() {{
+cardElement.addEventListener("click", function() {{
     flipped = !flipped;
     cardElement.classList.toggle("flipped", flipped);
-}}
-
-cardElement.addEventListener("click", flipCard);
+}});
 
 name1.addEventListener("input", showCard);
 name2.addEventListener("input", showCard);
@@ -1157,9 +1032,7 @@ document.getElementById("nextTurn").addEventListener("click", function() {{
 showCard();
 updatePlayers();
 
-// -----------------------------------------------------
-// WEB AUDIO API ROMANTIC AMBIENCE
-// -----------------------------------------------------
+// Web Audio API ambience
 
 let audioContext = null;
 let masterGain = null;
@@ -1190,12 +1063,10 @@ function addOscillator(frequency, type, gainValue) {{
 
     osc.type = type;
     osc.frequency.value = frequency;
-
     gain.gain.value = gainValue;
 
     osc.connect(gain);
     gain.connect(masterGain);
-
     osc.start();
 
     oscillators.push(osc);
@@ -1222,13 +1093,11 @@ function addNoise() {{
 
     filter.type = "lowpass";
     filter.frequency.value = 800;
-
     gain.gain.value = 0.09;
 
     noiseSource.connect(filter);
     filter.connect(gain);
     gain.connect(masterGain);
-
     noiseSource.start();
 }}
 
@@ -1238,10 +1107,7 @@ function createAmbience() {{
     )();
 
     masterGain = audioContext.createGain();
-
-    masterGain.gain.value =
-        Number(volumeSlider.value) / 100;
-
+    masterGain.gain.value = Number(volumeSlider.value) / 100;
     masterGain.connect(audioContext.destination);
 
     const sound = soundSelect.value;
@@ -1302,7 +1168,7 @@ soundSelect.addEventListener("change", function() {{
 }});
 
 volumeSlider.addEventListener("input", function() {{
-    if (masterGain) {{
+    if (masterGain && audioContext) {{
         masterGain.gain.setTargetAtTime(
             Number(volumeSlider.value) / 100,
             audioContext.currentTime,
@@ -1324,12 +1190,11 @@ window.addEventListener("pagehide", function() {{
 """
 
 
-# ---------------------------------------------------------
-# DETAIL PAGE
-# ---------------------------------------------------------
+# =========================================================
+# GAME DETAIL PAGE
+# =========================================================
 
 def render_game_page(game, games):
-
     path = f"game/{game['slug']}.html"
 
     title = (
@@ -1338,30 +1203,33 @@ def render_game_page(game, games):
     )
 
     description = game["description"]
-
     related = related_games(game, games)
 
     faq = []
 
     if game["faq_q1"] and game["faq_a1"]:
         faq.append({
-            "@type": "Question",
-            "name": game["faq_q1"],
-            "acceptedAnswer": {
-                "@type": "Answer",
-                "text": game["faq_a1"],
-            }
+            "question": game["faq_q1"],
+            "answer": game["faq_a1"],
         })
 
     if game["faq_q2"] and game["faq_a2"]:
         faq.append({
+            "question": game["faq_q2"],
+            "answer": game["faq_a2"],
+        })
+
+    faq_schema = [
+        {
             "@type": "Question",
-            "name": game["faq_q2"],
+            "name": item["question"],
             "acceptedAnswer": {
                 "@type": "Answer",
-                "text": game["faq_a2"],
+                "text": item["answer"],
             }
-        })
+        }
+        for item in faq
+    ]
 
     schema = {
         "@context": "https://schema.org",
@@ -1416,7 +1284,7 @@ def render_game_page(game, games):
             },
             {
                 "@type": "FAQPage",
-                "mainEntity": faq
+                "mainEntity": faq_schema
             }
         ]
     }
@@ -1424,7 +1292,6 @@ def render_game_page(game, games):
     category_url = (
         f"/category/{game['category_slug']}/page-1.html"
     )
-
     topic_url = f"/topic/{game['subcategory_slug']}.html"
 
     tags_html = "".join(
@@ -1437,29 +1304,26 @@ def render_game_page(game, games):
         game_card_html(item) for item in related
     )
 
-    faq_html = ""
-
     if faq:
-        for item in faq:
-            faq_html += f"""
+        faq_html = "".join(
+            f"""
             <div class="faq-item">
                 <details>
-                    <summary>{esc(item['name'])}</summary>
-                    <p class="muted">
-                        {esc(item['acceptedAnswer']['text'])}
-                    </p>
+                    <summary>{esc(item['question'])}</summary>
+                    <p class="muted">{esc(item['answer'])}</p>
                 </details>
             </div>
             """
-
-    elif not faq:
+            for item in faq
+        )
+    else:
         faq_html = """
         <p class="muted">
             No frequently asked questions have been added yet.
         </p>
         """
 
-    cards_html = f"""
+    cards_html = """
 <section class="section">
     <div class="container">
         <div class="eyebrow">PLAYABLE COUPLES CARD DECK</div>
@@ -1488,7 +1352,9 @@ def render_game_page(game, games):
                     <div>
                         <div class="eyebrow">COUPLES GAME</div>
                         <h3 id="cardFront">Tap to reveal your question</h3>
-                        <p class="muted">Your next conversation starts here.</p>
+                        <p class="muted">
+                            Your next conversation starts here.
+                        </p>
                     </div>
                 </div>
                 <div class="card-face card-back">
@@ -1551,9 +1417,7 @@ def render_game_page(game, games):
                 <option value="ambient">Deep Ambient Hum</option>
             </select>
 
-            <label for="volumeSlider">
-                Volume
-            </label>
+            <label for="volumeSlider">Volume</label>
             <input type="range" id="volumeSlider"
                    min="0" max="100" value="30">
         </div>
@@ -1639,7 +1503,6 @@ def render_game_page(game, games):
         <div class="grid">{related_html}</div>
     </div>
 </section>
-
 """
         + footer()
         + age_modal()
@@ -1649,12 +1512,11 @@ def render_game_page(game, games):
     )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # HOMEPAGE
-# ---------------------------------------------------------
+# =========================================================
 
 def render_home(games, categories, subcategories, tags):
-
     newest = sorted(
         games,
         key=date_sort_key,
@@ -1663,10 +1525,9 @@ def render_home(games, categories, subcategories, tags):
 
     category_html = ""
 
-    # One card per unique category, with true total count.
     for category_slug, items in sorted(
         categories.items(),
-        key=lambda x: (-len(x[1]), x[0])
+        key=lambda item: (-len(item[1]), item[0])
     ):
         category_name = items[0]["category"]
 
@@ -1683,7 +1544,7 @@ def render_home(games, categories, subcategories, tags):
 
     for sub_slug, items in sorted(
         subcategories.items(),
-        key=lambda x: (-len(x[1]), x[0])
+        key=lambda item: (-len(item[1]), item[0])
     ):
         sub_name = items[0]["subcategory"]
 
@@ -1707,7 +1568,7 @@ def render_home(games, categories, subcategories, tags):
 
     popular_tags = sorted(
         tag_counts.items(),
-        key=lambda x: (-x[1], x[0])
+        key=lambda item: (-item[1], item[0])
     )[:30]
 
     tag_html = "".join(
@@ -1717,8 +1578,7 @@ def render_home(games, categories, subcategories, tags):
     )
 
     latest_html = "".join(
-        game_card_html(game)
-        for game in newest
+        game_card_html(game) for game in newest
     )
 
     schema = {
@@ -1806,7 +1666,7 @@ def render_home(games, categories, subcategories, tags):
 
     <section class="section" id="latest">
         <div class="container">
-            <h2>30 Newest Couples Games</h2>
+            <h2>Newest Couples Games</h2>
             <div class="grid" id="gamesGrid">
 """
         + latest_html
@@ -1834,7 +1694,6 @@ def render_home(games, categories, subcategories, tags):
     const cards = Array.from(
         document.querySelectorAll("#gamesGrid .game-card")
     );
-
     const count = document.getElementById("searchCount");
     const empty = document.getElementById("emptyState");
 
@@ -1868,38 +1727,33 @@ def render_home(games, categories, subcategories, tags):
     )
 
 
-# ---------------------------------------------------------
-# CATEGORY HUBS
-# ---------------------------------------------------------
+# =========================================================
+# CATEGORY PAGES
+# =========================================================
 
 def render_category_page(category_slug, items, page_number, total_pages):
-
     category_name = items[0]["category"]
 
     start = (page_number - 1) * PER_PAGE
     page_items = items[start:start + PER_PAGE]
 
-    path = (
-        f"category/{category_slug}/page-{page_number}.html"
-    )
+    path = f"category/{category_slug}/page-{page_number}.html"
 
     description = (
         f"Explore {category_name}: discover interactive couples "
-        f"games, date night questions and conversation starters."
+        "games, date night questions and conversation starters."
     )
 
     cards = "".join(
-        game_card_html(game)
-        for game in page_items
+        game_card_html(game) for game in page_items
     )
 
     pagination = ""
 
     if page_number > 1:
-        previous = page_number - 1
         pagination += (
             f'<a class="btn btn-secondary" '
-            f'href="page-{previous}.html">← Previous</a>'
+            f'href="page-{page_number - 1}.html">← Previous</a>'
         )
 
     for number in range(1, total_pages + 1):
@@ -1909,37 +1763,39 @@ def render_category_page(category_slug, items, page_number, total_pages):
         )
 
     if page_number < total_pages:
-        next_page = page_number + 1
         pagination += (
-            f'<a class="btn" href="page-{next_page}.html">'
-            f'Next →</a>'
+            f'<a class="btn" href="page-{page_number + 1}.html">'
+            "Next →</a>"
         )
 
-    prev_link = ""
+    head = page_head(
+        f"{category_name} Couples Games – Page {page_number}",
+        description,
+        path
+    )
 
     if page_number > 1:
-        prev_link = (
-            f'<link rel="prev" href="{esc(canonical(
-                f"category/{category_slug}/page-{page_number - 1}.html"
-            ))}">'
+        prev_path = (
+            f"category/{category_slug}/page-{page_number - 1}.html"
+        )
+        head = head.replace(
+            "</head>",
+            f'<link rel="prev" href="{esc(canonical(prev_path))}">\n'
+            "</head>"
         )
 
-    next_link = ""
-
     if page_number < total_pages:
-        next_link = (
-            f'<link rel="next" href="{esc(canonical(
-                f"category/{category_slug}/page-{page_number + 1}.html"
-            ))}">'
+        next_path = (
+            f"category/{category_slug}/page-{page_number + 1}.html"
+        )
+        head = head.replace(
+            "</head>",
+            f'<link rel="next" href="{esc(canonical(next_path))}">\n'
+            "</head>"
         )
 
     return (
-        page_head(
-            f"{category_name} Couples Games – Page {page_number}",
-            description,
-            path
-        )
-        .replace("</head>", prev_link + next_link + "\n</head>")
+        head
         + header()
         + f"""
 <main class="container">
@@ -1969,15 +1825,13 @@ def render_category_page(category_slug, items, page_number, total_pages):
     )
 
 
-# ---------------------------------------------------------
-# TOPIC AND TAG HUBS
-# ---------------------------------------------------------
+# =========================================================
+# TOPIC AND TAG COLLECTION PAGES
+# =========================================================
 
 def render_collection_page(title, description, path, items):
-
     cards = "".join(
-        game_card_html(game)
-        for game in items
+        game_card_html(game) for game in items
     )
 
     schema = {
@@ -2001,9 +1855,7 @@ def render_collection_page(title, description, path, items):
         <div class="eyebrow">EXPLORE THE COLLECTION</div>
         <h1>{esc(title)}</h1>
         <p class="muted">{esc(description)}</p>
-        <p class="muted">
-            {format_count(len(items), "game")}
-        </p>
+        <p class="muted">{format_count(len(items), "game")}</p>
     </section>
 
     <section class="section">
@@ -2018,12 +1870,11 @@ def render_collection_page(title, description, path, items):
     )
 
 
-# ---------------------------------------------------------
+# =========================================================
 # LEGAL PAGES
-# ---------------------------------------------------------
+# =========================================================
 
 def render_legal_pages():
-
     dmca = f"""
 {page_head(
     "DMCA Copyright Policy | " + SITE_NAME,
@@ -2053,8 +1904,8 @@ def render_legal_pages():
     <h2>Contact</h2>
     <p>
         Copyright requests:
-        <a href="mailto:{CONTACT_EMAIL}">
-            {CONTACT_EMAIL}
+        <a href="mailto:{esc(CONTACT_EMAIL)}">
+            {esc(CONTACT_EMAIL)}
         </a>
     </p>
 
@@ -2102,8 +1953,8 @@ def render_legal_pages():
 
     <h2>Contact</h2>
     <p>
-        <a href="mailto:{CONTACT_EMAIL}">
-            {CONTACT_EMAIL}
+        <a href="mailto:{esc(CONTACT_EMAIL)}">
+            {esc(CONTACT_EMAIL)}
         </a>
     </p>
 </main>
@@ -2113,20 +1964,13 @@ def render_legal_pages():
 </body></html>
 """
 
-    write_file(
-        os.path.join(DIST, "dmca.html"),
-        dmca
-    )
-
-    write_file(
-        os.path.join(DIST, "2257.html"),
-        page2257
-    )
+    write_file(os.path.join(DIST, "dmca.html"), dmca)
+    write_file(os.path.join(DIST, "2257.html"), page2257)
 
 
-# ---------------------------------------------------------
+# =========================================================
 # XML SITEMAP STYLESHEET
-# ---------------------------------------------------------
+# =========================================================
 
 def sitemap_stylesheet():
     return r'''<?xml version="1.0" encoding="UTF-8"?>
@@ -2149,11 +1993,8 @@ body {
     font-family:system-ui,sans-serif;
     padding:30px;
 }
-main {
-    max-width:1000px;
-    margin:auto;
-}
-h1 {color:#ec4899}
+main { max-width:1000px; margin:auto; }
+h1 { color:#ec4899; }
 table {
     width:100%;
     border-collapse:collapse;
@@ -2165,21 +2006,16 @@ td,th {
     border-bottom:1px solid #30263d;
     text-align:left;
 }
-a {color:#c4b5fd}
-.muted {color:#aaa0b5}
+a { color:#c4b5fd; }
+.muted { color:#aaa0b5; }
 </style>
 </head>
 <body>
 <main>
 <h1>Website XML Sitemap</h1>
-<p class="muted">
-    Sitemap URLs indexed for discovery and crawling.
-</p>
+<p class="muted">Sitemap URLs indexed for discovery and crawling.</p>
 <table>
-<tr>
-<th>Location</th>
-<th>Last Modified</th>
-</tr>
+<tr><th>Location</th><th>Last Modified</th></tr>
 <xsl:for-each select="s:urlset/s:url">
 <tr>
 <td>
@@ -2198,14 +2034,12 @@ a {color:#c4b5fd}
 </xsl:stylesheet>'''
 
 
-# ---------------------------------------------------------
-# XML SITEMAPS
-# ---------------------------------------------------------
+# =========================================================
+# XML SITEMAPS AND ROBOTS.TXT
+# =========================================================
 
 def render_sitemaps(games, categories, subcategories, tags):
-
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
     urls = []
 
     def add_url(path, priority="0.7", frequency="weekly"):
@@ -2226,11 +2060,7 @@ def render_sitemaps(games, categories, subcategories, tags):
         )
 
     for category_slug, items in categories.items():
-
-        pages = max(
-            1,
-            math.ceil(len(items) / PER_PAGE)
-        )
+        pages = max(1, math.ceil(len(items) / PER_PAGE))
 
         for page in range(1, pages + 1):
             add_url(
@@ -2240,18 +2070,10 @@ def render_sitemaps(games, categories, subcategories, tags):
             )
 
     for sub_slug in subcategories:
-        add_url(
-            f"topic/{sub_slug}.html",
-            "0.7",
-            "weekly"
-        )
+        add_url(f"topic/{sub_slug}.html", "0.7", "weekly")
 
     for tag_slug in tags:
-        add_url(
-            f"tag/{tag_slug}.html",
-            "0.6",
-            "weekly"
-        )
+        add_url(f"tag/{tag_slug}.html", "0.6", "weekly")
 
     add_url("dmca.html", "0.3", "yearly")
     add_url("2257.html", "0.3", "yearly")
@@ -2265,17 +2087,15 @@ def render_sitemaps(games, categories, subcategories, tags):
         <priority>{item['priority']}</priority>
     </url>"""
 
-    # Keep individual sitemap files below the standard URL limit.
     chunks = [
-        urls[i:i + 45000]
-        for i in range(0, len(urls), 45000)
+        urls[i:i + SITEMAP_CHUNK_SIZE]
+        for i in range(0, len(urls), SITEMAP_CHUNK_SIZE)
     ]
 
     if not chunks:
         chunks = [[]]
 
     for index, chunk in enumerate(chunks, start=1):
-
         xml = (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<?xml-stylesheet type="text/xsl" href="/sitemap.xsl"?>\n'
@@ -2284,10 +2104,8 @@ def render_sitemaps(games, categories, subcategories, tags):
             + "\n</urlset>"
         )
 
-        filename = f"sitemap-{index}.xml"
-
         write_file(
-            os.path.join(DIST, filename),
+            os.path.join(DIST, f"sitemap-{index}.xml"),
             xml
         )
 
@@ -2323,27 +2141,18 @@ Allow: /
 Sitemap: {canonical('sitemap.xml')}
 """
 
-    write_file(
-        os.path.join(DIST, "robots.txt"),
-        robots
-    )
+    write_file(os.path.join(DIST, "robots.txt"), robots)
 
 
-# ---------------------------------------------------------
-# BUILD DIRECTORIES
-# ---------------------------------------------------------
+# =========================================================
+# OUTPUT DIRECTORY
+# =========================================================
 
 def prepare_output():
-
     if os.path.exists(DIST):
         shutil.rmtree(DIST)
 
-    directories = [
-        "game",
-        "category",
-        "topic",
-        "tag",
-    ]
+    directories = ["game", "category", "topic", "tag"]
 
     os.makedirs(DIST, exist_ok=True)
 
@@ -2354,18 +2163,57 @@ def prepare_output():
         )
 
 
-# ---------------------------------------------------------
+# =========================================================
+# OUTPUT VALIDATION
+# =========================================================
+
+def validate_output():
+    required_files = [
+        "index.html",
+        "dmca.html",
+        "2257.html",
+        "robots.txt",
+        "sitemap.xml",
+        "sitemap.xsl",
+        "sitemap-1.xml",
+    ]
+
+    missing = [
+        name for name in required_files
+        if not os.path.isfile(os.path.join(DIST, name))
+    ]
+
+    if missing:
+        raise RuntimeError(
+            "Build output is missing: " + ", ".join(missing)
+        )
+
+    with open(
+        os.path.join(DIST, "index.html"),
+        "r",
+        encoding="utf-8"
+    ) as file:
+        homepage = file.read()
+
+    if GOOGLE_SITE_VERIFICATION not in homepage:
+        raise RuntimeError("Google verification tag is missing.")
+
+    if BING_SITE_VERIFICATION not in homepage:
+        raise RuntimeError("Bing verification tag is missing.")
+
+    print("Output validation passed.")
+
+
+# =========================================================
 # MAIN BUILD
-# ---------------------------------------------------------
+# =========================================================
 
 def build():
-
     print("=" * 65)
     print(f"Building {SITE_NAME}")
     print("=" * 65)
 
     games = load_games()
-
     print(f"Loaded {len(games)} games.")
 
     prepare_output()
@@ -2383,26 +2231,20 @@ def build():
         )
     )
 
-    # Individual game detail pages
+    # Individual game pages
     for index, game in enumerate(games, start=1):
-
         page = render_game_page(game, games)
 
         write_file(
-            os.path.join(
-                DIST,
-                "game",
-                game["slug"] + ".html"
-            ),
+            os.path.join(DIST, "game", game["slug"] + ".html"),
             page
         )
 
         if index % 100 == 0:
             print(f"Generated {index} game pages.")
 
-    # Category hubs
+    # Category pages
     for category_slug, items in categories.items():
-
         total_pages = max(
             1,
             math.ceil(len(items) / PER_PAGE)
@@ -2414,13 +2256,9 @@ def build():
             category_slug
         )
 
-        os.makedirs(
-            category_directory,
-            exist_ok=True
-        )
+        os.makedirs(category_directory, exist_ok=True)
 
         for page_number in range(1, total_pages + 1):
-
             page = render_category_page(
                 category_slug,
                 items,
@@ -2436,9 +2274,8 @@ def build():
                 page
             )
 
-    # Dedicated subcategory hubs
+    # Subcategory topic pages
     for sub_slug, items in subcategories.items():
-
         sub_name = items[0]["subcategory"]
 
         description = (
@@ -2454,17 +2291,12 @@ def build():
         )
 
         write_file(
-            os.path.join(
-                DIST,
-                "topic",
-                sub_slug + ".html"
-            ),
+            os.path.join(DIST, "topic", sub_slug + ".html"),
             page
         )
 
-    # Dedicated tag hubs
+    # Tag pages
     for tag_slug, items in tags.items():
-
         tag_name = next(
             (
                 tag
@@ -2489,18 +2321,14 @@ def build():
         )
 
         write_file(
-            os.path.join(
-                DIST,
-                "tag",
-                tag_slug + ".html"
-            ),
+            os.path.join(DIST, "tag", tag_slug + ".html"),
             page
         )
 
     # Legal pages
     render_legal_pages()
 
-    # XML sitemaps and robots
+    # Sitemap and robots.txt
     render_sitemaps(
         games,
         categories,
@@ -2508,7 +2336,9 @@ def build():
         tags
     )
 
-    # Build statistics
+    # Validate generated files
+    validate_output()
+
     detail_count = len(games)
 
     category_page_count = sum(
@@ -2535,8 +2365,11 @@ def build():
     print(f"Subcategories:     {len(subcategories)}")
     print(f"Unique tags:       {len(tags)}")
     print(f"Category pages:    {category_page_count}")
-    print(f"Total HTML pages:   {total_pages}")
-    print(f"Output directory:   {DIST}")
+    print(f"Total HTML pages:  {total_pages}")
+    print(f"Output directory:  {DIST}")
+    print("Google verification: Included")
+    print("Bing verification:   Included")
+    print(f"Network links:       {len(NETWORK_SITES)}")
     print("=" * 65)
 
 
